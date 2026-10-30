@@ -93,5 +93,6 @@ CASES = {
     "vegf2": _complex("vegf2", _VEGF),  # 247
     "il17": _complex("il17", _RAW["IL17_8B7W"]),  # 369
     "tnf2_msa": _complex("tnf2_msa", _RAW["TNF_9BN7"], target_msa=tnf_a3m(), target=_TNF, copies=2),  # 419, real 2225-row MSA on both TNF copies
+    "tnf2_nomsa": _complex("tnf2_nomsa", _RAW["TNF_9BN7"], target=_TNF, copies=2),  # 419, same complex, single sequence
     "il17_scfv": _complex("il17_scfv", _RAW["IL17_8DY1"]),  # 499
 }
