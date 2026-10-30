@@ -109,7 +109,7 @@ class DrawRecorder:
                 index = self._counts.get(site, 0)
                 self._counts[site] = index + 1
                 value = (out != 0) if name == "dropout" else out
-                self.arrays[f"{site}/{index}"] = value.detach().cpu().numpy()
+                self.arrays[f"{site}/{index}"] = value.detach().cpu().numpy().copy()
             return out
         return wrapper
 

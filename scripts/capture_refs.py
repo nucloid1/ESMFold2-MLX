@@ -50,10 +50,10 @@ def capture_pair_block(case: Case, device: str, seed: int) -> None:
         def hook(module, args, kwargs, output):
             if name in store:  # first loop only
                 return
-            store[name] = (args[0].detach().cpu().numpy(), output.detach().cpu().numpy())
+            store[name] = (args[0].detach().cpu().numpy().copy(), output.detach().cpu().numpy().copy())
             mask = kwargs.get(mask_kwarg)
             if mask is not None and "mask" not in store:
-                store["mask"] = mask.detach().cpu().numpy()
+                store["mask"] = mask.detach().cpu().numpy().copy()
         return hook
 
     for i in PAIR_BLOCKS:
@@ -98,16 +98,16 @@ def capture_trunk(case: Case, device: str, seed: int) -> None:
     loop_count = [0]
 
     def on_shim(module, args, output):
-        shim["lm_z"] = output.detach().cpu().numpy()
+        shim["lm_z"] = output.detach().cpu().numpy().copy()
 
     original_loop = model._run_one_loop
 
     def run_one_loop(**kw):
-        inputs.update({k: kw[k].detach().cpu().numpy() for k in ("z", "z_init", "lm_z", "pair_mask", "a", "b_mat")})
+        inputs.update({k: kw[k].detach().cpu().numpy().copy() for k in ("z", "z_init", "lm_z", "pair_mask", "a", "b_mat")})
         inputs["total_steps"] = np.array(kw["total_steps"])
         msa_inputs = kw["_msa_inputs"]  # always present: the featurizer supplies a query-only MSA
         for k in ("msa", "msa_attention_mask", "has_deletion", "deletion_value", "x_inputs"):
-            inputs[k] = msa_inputs[k].detach().cpu().numpy()
+            inputs[k] = msa_inputs[k].detach().cpu().numpy().copy()
         inputs["max_depth"] = np.array(msa_inputs["max_depth"])
         return original_loop(**kw)
 
@@ -118,7 +118,7 @@ def capture_trunk(case: Case, device: str, seed: int) -> None:
             if name not in msa:
                 msa[name] = True
                 for k, v in getter(args, kwargs, output).items():
-                    msa[k] = v.detach().cpu().numpy()
+                    msa[k] = v.detach().cpu().numpy().copy()
         return hook
 
     enc = model.msa_encoder
@@ -135,17 +135,17 @@ def capture_trunk(case: Case, device: str, seed: int) -> None:
 
     def on_lm_encoder(module, args, kwargs, output):
         if "lm_enc0_in" not in states:
-            states["lm_enc0_in"] = args[0].detach().cpu().numpy()
-            states["lm_enc0_out"] = output.detach().cpu().numpy()
+            states["lm_enc0_in"] = args[0].detach().cpu().numpy().copy()
+            states["lm_enc0_out"] = output.detach().cpu().numpy().copy()
 
     def on_trunk(module, args, kwargs, output):
         k = loop_count[0]
         loop_count[0] += 1
         if k in LOOP_SAMPLE:
-            states[f"loop{k}_out"] = output.detach().cpu().numpy()
+            states[f"loop{k}_out"] = output.detach().cpu().numpy().copy()
 
     def on_coda(module, args, kwargs, output):
-        out["z"] = output.detach().cpu().numpy()
+        out["z"] = output.detach().cpu().numpy().copy()
 
     model.language_model.register_forward_hook(on_shim)
     model._run_one_loop = run_one_loop
@@ -165,13 +165,49 @@ def capture_trunk(case: Case, device: str, seed: int) -> None:
     print(f"{loop_count[0]} trunk loops; draw sites: {sorted({k.split('/')[0] for k in recorder.arrays})}")
 
 
+def capture_heads(case: Case, device: str, seed: int) -> None:
+    """Distogram and confidence heads in the real forward: synthetic ESMC states, the checkpoint's
+    sampling steps, TWO diffusion samples."""
+    from esm.models.esmfold2.processor import _seed_context
+
+    from helpers import synthetic_lm_states
+
+    model = load_trunk_only(device)
+    features, _ = featurize(case, seed, device)
+    lm = torch.from_numpy(synthetic_lm_states(features["res_type"].shape[1])).to(device)
+    out: dict = {}
+
+    def keep(**arrays):
+        for k, v in arrays.items():
+            out[k] = v.detach().cpu().numpy().copy() if isinstance(v, torch.Tensor) else np.array(v)
+
+    model.parcae_coda.register_forward_hook(lambda m, a, kw, o: keep(z_coda=o), with_kwargs=True)
+    model.distogram_head.register_forward_hook(lambda m, a, o: keep(disto_in=a[0], disto_out=o))
+
+    def on_conf(module, args, kwargs, output):
+        keep(num_diffusion_samples=kwargs["num_diffusion_samples"])
+        keep(**{f"conf_{k}": v for k, v in kwargs.items() if isinstance(v, torch.Tensor)})
+        keep(**{f"conf_out_{k}": v for k, v in output.items()})
+
+    ch = model.confidence_head
+    ch.register_forward_hook(on_conf, with_kwargs=True)
+    ch.folding_trunk.register_forward_hook(
+        lambda m, a, kw, o: keep(conf_trunk_in=a[0], conf_trunk_mask=kw["pair_attention_mask"], conf_trunk_out=o), with_kwargs=True)
+    ch.row_attention_pooling.register_forward_hook(lambda m, a, o: keep(conf_pool_in=a[0], conf_pool_mask=a[1], conf_pool_out=o))
+
+    with torch.no_grad(), _seed_context(seed):
+        model(**features, lm_hidden_states=lm, num_diffusion_samples=2, **SAMPLER)
+    out["z"] = out.pop("z_coda")  # the distogram head's z (float32 coda output)
+    _save(case, device, "heads", out)
+
+
 def capture_features(case: Case, device: str, seed: int) -> None:
     """The esm builder's feature dict (shared by both devices), numpy."""
     features, _ = featurize(case, seed, "cpu")
     _save(case, device, "features", {k: v.numpy() for k, v in features.items() if isinstance(v, torch.Tensor)})
 
 
-CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk, "features": capture_features}
+CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk, "features": capture_features, "heads": capture_heads}
 
 
 def main(argv=None) -> None:
