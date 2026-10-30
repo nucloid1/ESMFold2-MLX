@@ -130,6 +130,14 @@ class ConfidenceHead:
                  atom_attention_mask, asym_id, mol_type, num_diffusion_samples=1, relative_position_encoding=None,
                  token_bonds_encoding=None) -> dict[str, mx.array]:
         n = num_diffusion_samples
+        if n > 1:
+            # Samples are independent here; scoring them one at a time keeps the [S, L, L, c] pair stack
+            # (22.75 GiB for 3 samples at 499 tokens, above torch's chunked peak) to one sample's worth.
+            x = self._flatten_samples(x_pred)
+            parts = [self(s_inputs, z, x[i:i + 1], distogram_atom_idx, token_attention_mask, atom_to_token,
+                          atom_attention_mask, asym_id, mol_type, 1, relative_position_encoding, token_bonds_encoding)
+                     for i in range(n)]
+            return {k: mx.concatenate([p[k] for p in parts], axis=0) for k in CONFIDENCE_KEYS}
         pair = self.pair_front(s_inputs, z, x_pred, distogram_atom_idx, token_attention_mask, n,
                                relative_position_encoding, token_bonds_encoding)
         mask = self._repeat(token_attention_mask, n).astype(mx.float32)

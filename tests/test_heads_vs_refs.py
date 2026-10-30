@@ -90,6 +90,27 @@ def test_confidence_head_is_bitwise_repeatable(head):
     assert all(np.array_equal(np.array(a[k]), np.array(b[k])) for k in CONFIDENCE_KEYS)
 
 
+def test_samples_are_scored_one_at_a_time_so_peak_memory_does_not_scale_with_samples(head):
+    """Checkpoint 2 found the 3-sample confidence head peaking at 22.75 GiB at 499 tokens (the whole
+    trunk peaks at 8.9), above torch's chunked peak. Samples are independent here, so scoring them one
+    at a time gives the same outputs at about a third of the peak."""
+    ref = load_ref("vegf1", "heads")
+    kw = _conf_inputs(ref)
+    tripled = {**kw, "x_pred": mx.concatenate([kw["x_pred"], kw["x_pred"][:1]], axis=0), "num_diffusion_samples": 3}
+    one = head(**{**kw, "x_pred": kw["x_pred"][:1], "num_diffusion_samples": 1})
+    seen = []
+    original = head.folding_trunk
+    head.folding_trunk = lambda pair, mask: seen.append(pair.shape[0]) or original(pair, mask)
+    try:
+        three = head(**tripled)
+    finally:
+        head.folding_trunk = original
+    assert seen == [1, 1, 1]  # the [S, L, L, c] pair stack never holds more than one sample
+    for k in CONFIDENCE_KEYS:  # sample 0 of the batch equals the single-sample run
+        assert rel_err(np.array(three[k])[0], np.array(one[k])[0]) < 1e-6, k
+        assert np.array(three[k]).shape[0] == 3, k
+
+
 def test_heads_consume_every_weight(head, weights_dir):
     DistogramHead(w := load_group(weights_dir, "distogram_head"))
     assert w.unused() == []
