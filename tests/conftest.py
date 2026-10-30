@@ -18,3 +18,12 @@ from esmfold2_mlx.gpu_lock import gpu_lock  # noqa: E402
 def _session_gpu_lock():
     with gpu_lock():
         yield
+
+
+@pytest.fixture(scope="session")
+def weights_dir() -> str:
+    """The converted weights (gitignored; build with scripts/convert_weights.py)."""
+    path = Path(__file__).resolve().parents[1] / "weights"
+    if not (path / "manifest.json").exists():
+        pytest.fail(f"no converted weights in {path}; run: PYTHONPATH=. {sys.executable} scripts/convert_weights.py", pytrace=False)
+    return str(path)
