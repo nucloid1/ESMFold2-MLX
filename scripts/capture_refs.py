@@ -201,13 +201,53 @@ def capture_heads(case: Case, device: str, seed: int) -> None:
     _save(case, device, "heads", out)
 
 
+def _np(t) -> np.ndarray:
+    t = t.detach().cpu()
+    return (t.float() if t.dtype == torch.bfloat16 else t).numpy().copy()
+
+
+def capture_embed(case: Case, device: str, seed: int) -> None:
+    """Inputs embedder (atom encoder, block 0), rel_pos, token bonds and z_init; no ESMC states, one
+    loop step and one sampler step (only the prelude matters). Run on cpu AND mps: the atom attention
+    runs in bf16 in torch, and the cpu/mps spread is the parity gate for those stages."""
+    from esm.models.esmfold2.processor import _seed_context
+
+    model = load_trunk_only(device)
+    features, _ = featurize(case, seed, device)
+    out: dict = {}
+    model.inputs_embedder.register_forward_hook(lambda m, a, kw, o: out.update(x_inputs=_np(o)), with_kwargs=True)
+
+    def on_encoder(module, args, kwargs, output):
+        a, q, c, params, _ = output
+        out.update(atom_a=_np(a), atom_q=_np(q), cos=_np(params[0]), sin=_np(params[1]),
+                   valid=_np(kwargs["atom_attention_mask"]).astype(bool))
+
+    enc = model.inputs_embedder.atom_attention_encoder
+    enc.register_forward_hook(on_encoder, with_kwargs=True)
+    enc.atom_transformer.blocks[0].register_forward_hook(
+        lambda m, a, o: out.update(blk0_x=_np(a[0]), blk0_c=_np(a[1]), blk0_out=_np(o)))
+    model.rel_pos.register_forward_hook(lambda m, a, kw, o: out.update(rel_pos=_np(o)), with_kwargs=True)
+    model.token_bonds.register_forward_hook(lambda m, a, o: out.update(token_bonds=_np(o)))
+    original_loop = model._run_one_loop
+
+    def run_one_loop(**kw):
+        out["z_init"] = _np(kw["z_init"])
+        return original_loop(**kw)
+
+    model._run_one_loop = run_one_loop
+    with torch.no_grad(), _seed_context(seed):
+        model(**features, lm_hidden_states=None, num_loops=0, num_sampling_steps=1, num_diffusion_samples=1, **SAMPLER)
+    _save(case, device, "embed", out)
+
+
 def capture_features(case: Case, device: str, seed: int) -> None:
     """The esm builder's feature dict (shared by both devices), numpy."""
     features, _ = featurize(case, seed, "cpu")
     _save(case, device, "features", {k: v.numpy() for k, v in features.items() if isinstance(v, torch.Tensor)})
 
 
-CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk, "features": capture_features, "heads": capture_heads}
+CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk, "features": capture_features, "heads": capture_heads,
+            "embed": capture_embed}
 
 
 def main(argv=None) -> None:
