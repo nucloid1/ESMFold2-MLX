@@ -3,7 +3,7 @@
     PYTHONPATH=. python bench/ckpt2.py
 
 Cases at 1 and 3 diffusion samples; per configuration, one process each, one after another under this
-driver's gpu lock: torch timing (2 warmups, 5 timed), MLX timing (same), then MLX once more under a hard
+driver's gpu lock: torch timing (1 warmup, 3 timed), MLX timing (same), then MLX once more under a hard
 memory cap equal to torch's peak. PASS only if MLX's median is at least 10 percent below torch's for
 every configuration and every capped run survived.
 """
