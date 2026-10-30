@@ -83,6 +83,49 @@ def build_spec(case: Case):
     return StructurePredictionInput(sequences=items)
 
 
+class DrawRecorder:
+    """Record every random draw the esmfold2 code makes while active.
+
+    Wraps ``torch.randn``, ``randn_like``, ``rand``, ``randperm``, ``torch.nn.functional.dropout`` and
+    ``torch.nn.init.trunc_normal_``; a call is recorded only when its caller lives under
+    ``esm/models/esmfold2/``, under the key ``<enclosing function>:<torch function>/<call index>``
+    (the names ``esmfold2_mlx.rng.SITES`` replays). Dropout is recorded as its bool keep mask.
+    """
+
+    TARGETS = ((torch, "randn"), (torch, "randn_like"), (torch, "rand"), (torch, "randperm"),
+               (torch.nn.functional, "dropout"), (torch.nn.init, "trunc_normal_"))
+
+    def __init__(self) -> None:
+        self.arrays: dict = {}
+        self._counts: dict = {}
+        self._saved: list = []
+
+    def _wrap(self, name, original):
+        def wrapper(*args, **kwargs):
+            out = original(*args, **kwargs)
+            caller = sys._getframe(1).f_code
+            if "esm/models/esmfold2/" in caller.co_filename:
+                site = f"{caller.co_name}:{name}"
+                index = self._counts.get(site, 0)
+                self._counts[site] = index + 1
+                value = (out != 0) if name == "dropout" else out
+                self.arrays[f"{site}/{index}"] = value.detach().cpu().numpy()
+            return out
+        return wrapper
+
+    def __enter__(self):
+        for module, name in self.TARGETS:
+            original = getattr(module, name)
+            self._saved.append((module, name, original))
+            setattr(module, name, self._wrap(name, original))
+        return self
+
+    def __exit__(self, *exc):
+        for module, name, original in reversed(self._saved):
+            setattr(module, name, original)
+        self._saved.clear()
+
+
 def featurize(case: Case, seed: int, device: str):
     """``(features, chain_infos)`` from the esm package's own input builder."""
     from esm.models.esmfold2.processor import ESMFold2InputBuilder

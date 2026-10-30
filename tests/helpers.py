@@ -40,6 +40,15 @@ def assert_live(x, floor: float = 1e-3) -> None:
     assert norm >= floor, f"near-zero reference (norm {norm:.3g} < {floor:.3g}): a match proves nothing"
 
 
+def synthetic_lm_states(n_tokens: int, seed: int = 1234) -> np.ndarray:
+    """Stand-in for ESMC-6B hidden states, [1, N, 81, 2560] float32, reproducible from the seed.
+
+    Light captures feed these through the real torch modules so the language-model path is ported
+    without loading ESMC; real ESMC states replace them when Task 2's corpus exists.
+    """
+    return np.random.default_rng(seed).standard_normal((1, n_tokens, 81, 2560), dtype=np.float32)
+
+
 def refs_root() -> Path:
     return Path(os.environ.get("ESMFOLD2_MLX_REFS", REPO / "refs"))
 

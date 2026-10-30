@@ -75,7 +75,97 @@ def capture_pair_block(case: Case, device: str, seed: int) -> None:
     _save(case, device, "pair_block", arrays)
 
 
-CAPTURES = {"pair_block": capture_pair_block}
+LOOP_SAMPLE = (0, 1, 2, 5, 10, 15, 20)
+
+
+def capture_trunk(case: Case, device: str, seed: int) -> None:
+    """The looped trunk with synthetic ESMC states (helpers.synthetic_lm_states), checkpoint loops.
+
+    Writes ``lm_shim`` (the shim's output), ``trunk_inputs`` (what ``_run_one_loop`` receives),
+    ``loop_states`` (lm_encoder in/out at loop 0 and the pair after sampled loops), ``trunk_out`` (after
+    readout and coda) and ``trunk_draws`` (every random draw, for replay). One sampler step only.
+    """
+    from esm.models.esmfold2.processor import _seed_context
+
+    from helpers import synthetic_lm_states
+    from torch_model import DrawRecorder
+
+    model = load_trunk_only(device)
+    features, _ = featurize(case, seed, device)
+    n = features["res_type"].shape[1]
+    lm = torch.from_numpy(synthetic_lm_states(n)).to(device)
+    shim, inputs, states, out = {}, {}, {}, {}
+    loop_count = [0]
+
+    def on_shim(module, args, output):
+        shim["lm_z"] = output.detach().cpu().numpy()
+
+    original_loop = model._run_one_loop
+
+    def run_one_loop(**kw):
+        inputs.update({k: kw[k].detach().cpu().numpy() for k in ("z", "z_init", "lm_z", "pair_mask", "a", "b_mat")})
+        inputs["total_steps"] = np.array(kw["total_steps"])
+        msa_inputs = kw["_msa_inputs"]  # always present: the featurizer supplies a query-only MSA
+        for k in ("msa", "msa_attention_mask", "has_deletion", "deletion_value", "x_inputs"):
+            inputs[k] = msa_inputs[k].detach().cpu().numpy()
+        inputs["max_depth"] = np.array(msa_inputs["max_depth"])
+        return original_loop(**kw)
+
+    msa = {}
+
+    def first(name, getter):
+        def hook(module, args, kwargs, output):
+            if name not in msa:
+                msa[name] = True
+                for k, v in getter(args, kwargs, output).items():
+                    msa[k] = v.detach().cpu().numpy()
+        return hook
+
+    enc = model.msa_encoder
+    enc.register_forward_hook(first("enc", lambda a, kw, o: {**{k: kw[k] for k in (
+        "x_pair", "x_inputs", "msa_oh", "has_deletion", "deletion_value", "msa_attention_mask")}, "out": o}), with_kwargs=True)
+    enc.blocks[0].outer_product_mean.register_forward_hook(
+        first("opm0", lambda a, kw, o: {"opm0_m": a[0], "opm0_mask": a[1], "opm0_out": o}), with_kwargs=True)
+    enc.blocks[0].msa_pair_weighted_averaging.register_forward_hook(
+        first("pwa0", lambda a, kw, o: {"pwa0_m": a[0], "pwa0_pair": a[1], "pwa0_pair_mask": a[2], "pwa0_out": o}), with_kwargs=True)
+    for i in (0, 3):
+        enc.blocks[i].register_forward_hook(first(f"blk{i}", lambda a, kw, o, i=i: {
+            f"blk{i}_m": a[0], f"blk{i}_pair": a[1], f"blk{i}_msa_mask": a[2], f"blk{i}_pair_mask": a[3],
+            f"blk{i}_m_out": o[0], f"blk{i}_pair_out": o[1]}), with_kwargs=True)
+
+    def on_lm_encoder(module, args, kwargs, output):
+        if "lm_enc0_in" not in states:
+            states["lm_enc0_in"] = args[0].detach().cpu().numpy()
+            states["lm_enc0_out"] = output.detach().cpu().numpy()
+
+    def on_trunk(module, args, kwargs, output):
+        k = loop_count[0]
+        loop_count[0] += 1
+        if k in LOOP_SAMPLE:
+            states[f"loop{k}_out"] = output.detach().cpu().numpy()
+
+    def on_coda(module, args, kwargs, output):
+        out["z"] = output.detach().cpu().numpy()
+
+    model.language_model.register_forward_hook(on_shim)
+    model._run_one_loop = run_one_loop
+    model.lm_encoder.register_forward_hook(on_lm_encoder, with_kwargs=True)
+    model.folding_trunk.register_forward_hook(on_trunk, with_kwargs=True)
+    model.parcae_coda.register_forward_hook(on_coda, with_kwargs=True)
+
+    with torch.no_grad(), _seed_context(seed), DrawRecorder() as recorder:
+        model(**features, lm_hidden_states=lm, num_sampling_steps=1, num_diffusion_samples=1, **SAMPLER)
+
+    _save(case, device, "lm_shim", shim)
+    _save(case, device, "trunk_inputs", inputs)
+    _save(case, device, "loop_states", states)
+    _save(case, device, "trunk_out", out)
+    _save(case, device, "msa_encoder", {k: v for k, v in msa.items() if v is not True})
+    _save(case, device, "trunk_draws", recorder.arrays)
+    print(f"{loop_count[0]} trunk loops; draw sites: {sorted({k.split('/')[0] for k in recorder.arrays})}")
+
+
+CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk}
 
 
 def main(argv=None) -> None:

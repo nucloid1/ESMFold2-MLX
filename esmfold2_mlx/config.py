@@ -144,6 +144,7 @@ class FoldOptions:
     step_scale: float = 1.5
     max_inference_sigma: float = 256.0
     seed: int = 0
+    lm_dropout: float | None = None  # esm _lm_dropout_context: None/0 keep the checkpoint's 0.25 per loop
 
 
 def _build(cls, data: dict, where: str):

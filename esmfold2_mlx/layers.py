@@ -90,17 +90,20 @@ class Linear:
 
 
 class Transition:
-    """LayerNorm + SwiGLU feed-forward with the residual inside, as the torch module returns it."""
+    """LayerNorm + SwiGLU feed-forward. ``residual=True`` mirrors esm ``Transition`` (returns
+    ``x + ffn(LN(x))``); ``residual=False`` mirrors ``PairTransition`` (model.py:81, returns the update)."""
 
-    def __init__(self, w: Weights, prefix: str) -> None:
+    def __init__(self, w: Weights, prefix: str, residual: bool = True) -> None:
         self.norm = LayerNorm.load(w, key(prefix, "norm"))
         self.w12 = Linear.load(w, key(prefix, "ffn.w12"))
         self.w3 = Linear.load(w, key(prefix, "ffn.w3"))
         self.hidden = self.w3.weight.shape[1]
+        self.residual = residual
 
     def __call__(self, x: mx.array) -> mx.array:
         x12 = self.w12(self.norm(x))
-        return _add(x, self.w3(_swiglu(x12[..., : self.hidden], x12[..., self.hidden:])))
+        update = self.w3(_swiglu(x12[..., : self.hidden], x12[..., self.hidden:]))
+        return _add(x, update) if self.residual else update
 
 
 class TriangleMultiplication:
