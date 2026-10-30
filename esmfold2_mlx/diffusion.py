@@ -30,6 +30,7 @@ from .atoms import AtomDecoder, AtomEncoder
 from .config import ModelConfig
 from .layers import LayerNorm, Linear
 from .rng import Draws
+from .schedule import noise_schedule  # noqa: F401  (re-exported: tests and the sampler use it from here)
 from .weights import Weights, key, load_group
 
 _F32_MIN = float(np.finfo(np.float32).min)
@@ -214,24 +215,6 @@ class DiffusionModule:
         if t.size == 1:
             t = mx.broadcast_to(t, (x_noisy.shape[0],))
         return self.denoise(self.prepare(**inputs), x_noisy, t)
-
-
-def noise_schedule(cfg: ModelConfig, steps: Optional[int], max_sigma: Optional[float]) -> np.ndarray:
-    """``inference_noise_schedule`` then the ``max_inference_sigma`` cap, in torch's float32 arithmetic."""
-    sh = cfg.structure_head
-    sd = np.float32(sh.diffusion_module.sigma_data)
-    steps = sh.inference_num_steps if steps is None else int(steps)
-    if steps == 1:
-        sched = np.array([sh.inference_s_max * sh.diffusion_module.sigma_data, 0.0], dtype=np.float32)
-    else:
-        inv_p = 1.0 / float(sh.inference_p)
-        lo, hi = float(sh.inference_s_min) ** inv_p, float(sh.inference_s_max) ** inv_p
-        k = np.arange(steps, dtype=np.float32)
-        base = np.float32(hi) + (k / np.float32(steps - 1)) * np.float32(lo - hi)
-        sched = np.concatenate([sd * base ** np.float32(sh.inference_p), np.zeros(1, np.float32)]).astype(np.float32)
-    if max_sigma is not None:
-        sched = np.concatenate([np.array([max_sigma], np.float32), sched[sched <= np.float32(max_sigma)]])
-    return sched
 
 
 def rotations_from_quaternions(q: mx.array) -> mx.array:
