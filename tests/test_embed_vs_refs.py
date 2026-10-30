@@ -146,5 +146,21 @@ def test_padded_atoms_do_not_leak_into_real_atoms(weights_dir):
     assert rel_err(with_pad, plain) < 1e-3
 
 
+def test_scatter_mean_and_embedder_are_bitwise_repeatable(embedder):
+    """Atomic scatter-adds reorder float sums run to run; same inputs must give the same bits so a
+    fixed seed gives a fixed fold."""
+    from esmfold2_mlx.atoms import scatter_mean
+
+    f = _features("m49")
+    rng = np.random.default_rng(0)
+    x = mx.array(rng.standard_normal((2, 352, 768)).astype(np.float32))
+    a2t = mx.broadcast_to(f["atom_to_token"], (2, 352))
+    m = mx.broadcast_to(f["atom_attention_mask"], (2, 352))
+    runs = [np.array(scatter_mean(x, a2t, 43, m)) for _ in range(5)]
+    assert all(np.array_equal(runs[0], r) for r in runs[1:])
+    xs = [np.array(embedder(f).x_inputs) for _ in range(3)]
+    assert all(np.array_equal(xs[0], r) for r in xs[1:])
+
+
 def test_embedder_consumes_every_weight(embedder):
     assert embedder.groups and all(w.unused() == [] for w in embedder.groups.values())

@@ -12,7 +12,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from helpers import REPO, assert_live, load_ref, rel_err
+from helpers import REPO, assert_live, kabsch_rmsd, load_ref, rel_err
 
 from esmfold2_mlx.config import load_config
 from esmfold2_mlx.diffusion import DiffusionModule, DiffusionSampler, noise_schedule, weighted_rigid_align
@@ -49,16 +49,6 @@ def _call(ref, i):
     kw = {k: mx.array(ref[f"call{i}_{k}"]) for k in keys}
     kw["num_diffusion_samples"] = int(ref["num_diffusion_samples"])
     return kw
-
-
-def kabsch_rmsd(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
-    """RMSD after optimally superposing a onto b over the masked atoms ([A, 3] each)."""
-    a, b = a[mask].astype(np.float64), b[mask].astype(np.float64)
-    a, b = a - a.mean(0), b - b.mean(0)
-    u, _, vt = np.linalg.svd(a.T @ b)
-    d = np.sign(np.linalg.det(u @ vt))
-    r = u @ np.diag([1.0, 1.0, d]) @ vt
-    return float(np.sqrt(np.mean(np.sum((a @ r - b) ** 2, axis=-1))))
 
 
 @pytest.mark.parametrize("case", CASES)

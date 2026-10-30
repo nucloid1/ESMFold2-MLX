@@ -313,6 +313,28 @@ def capture_sampler(case: Case, device: str, seed: int) -> None:
     _save(case, device, "sampler", out)
 
 
+def capture_fold(case: Case, device: str, seed: int) -> None:
+    """The whole forward (synthetic ESMC states, checkpoint loops and steps, 2 samples). cpu records
+    every random draw (``fold_draws``); mps replays those draws, so both devices see the same randomness."""
+    from esm.models.esmfold2.processor import _seed_context
+
+    from helpers import synthetic_lm_states
+    from torch_model import DrawRecorder, DrawReplayer
+
+    model = load_trunk_only(device)
+    features, _ = featurize(case, seed, device)
+    lm = torch.from_numpy(synthetic_lm_states(features["res_type"].shape[1])).to(device)
+    with torch.no_grad(), _seed_context(seed):
+        if device == "cpu":
+            with DrawRecorder() as recorder:
+                out = model(**features, lm_hidden_states=lm, num_diffusion_samples=2, **SAMPLER)
+            _save(case, device, "fold_draws", recorder.arrays)
+        else:
+            with DrawReplayer(dict(np.load(ref_path(case.name, "fold_draws", "cpu")))):
+                out = model(**features, lm_hidden_states=lm, num_diffusion_samples=2, **SAMPLER)
+    _save(case, device, "fold", {k: _np(v) for k, v in out.items() if isinstance(v, torch.Tensor)})
+
+
 def capture_features(case: Case, device: str, seed: int) -> None:
     """The esm builder's feature dict (shared by both devices), numpy."""
     features, _ = featurize(case, seed, "cpu")
@@ -320,7 +342,7 @@ def capture_features(case: Case, device: str, seed: int) -> None:
 
 
 CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk, "features": capture_features, "heads": capture_heads,
-            "embed": capture_embed, "sampler": capture_sampler}
+            "embed": capture_embed, "sampler": capture_sampler, "fold": capture_fold}
 
 
 def main(argv=None) -> None:

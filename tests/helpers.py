@@ -40,6 +40,16 @@ def assert_live(x, floor: float = 1e-3) -> None:
     assert norm >= floor, f"near-zero reference (norm {norm:.3g} < {floor:.3g}): a match proves nothing"
 
 
+def kabsch_rmsd(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
+    """RMSD after optimally superposing a onto b over the masked atoms ([A, 3] each)."""
+    a, b = np.asarray(a)[mask].astype(np.float64), np.asarray(b)[mask].astype(np.float64)
+    a, b = a - a.mean(0), b - b.mean(0)
+    u, _, vt = np.linalg.svd(a.T @ b)
+    d = np.sign(np.linalg.det(u @ vt))
+    r = u @ np.diag([1.0, 1.0, d]) @ vt
+    return float(np.sqrt(np.mean(np.sum((a @ r - b) ** 2, axis=-1))))
+
+
 def synthetic_lm_states(n_tokens: int, seed: int = 1234) -> np.ndarray:
     """Stand-in for ESMC-6B hidden states, [1, N, 81, 2560] float32, reproducible from the seed.
 

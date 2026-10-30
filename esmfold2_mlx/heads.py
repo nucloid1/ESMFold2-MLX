@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import mlx.core as mx
 
+from .atoms import segment_sum
 from .config import ModelConfig
 from .layers import LayerNorm, Linear
 from .trunk import FoldingTrunk
@@ -156,9 +157,8 @@ class ConfidenceHead:
         plddt_logits = (self.plddt_ln(s_atoms)[..., None, :] @ self.plddt_weight[intra]).squeeze(-2)
         plddt_atom = categorical_mean(plddt_logits, 0.0, 1.0)
 
-        rows = mx.broadcast_to(mx.arange(S)[:, None], a2t.shape)
-        plddt_sum = mx.zeros((S, L)).at[rows, a2t].add(plddt_atom * atom_mask)
-        atom_count = mx.zeros((S, L)).at[rows, a2t].add(atom_mask)
+        plddt_sum = segment_sum((plddt_atom * atom_mask)[..., None], a2t, L)[..., 0]
+        atom_count = segment_sum(atom_mask[..., None], a2t, L)[..., 0]
         plddt = plddt_sum / mx.maximum(atom_count, 1e-6)
         complex_plddt = mx.sum(plddt_atom * atom_mask, axis=-1) / (mx.sum(atom_mask, axis=-1) + _EPS)
 

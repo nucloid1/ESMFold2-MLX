@@ -154,14 +154,22 @@ class SWAAtomBlock:
         return x + gate_f * self.w_down(_silu(x1) * x2)
 
 
+def segment_sum(values: mx.array, idx: mx.array, n: int, mask: mx.array | None = None) -> mx.array:
+    """Sum ``values`` [B, A, d] into ``n`` segments by ``idx`` [B, A] (masked entries dropped).
+
+    A one-hot [B, n, A] matmul rather than an atomic scatter-add: atomics reorder the float sums from
+    run to run, which made a fixed seed give a different fold (2e-4 relative after the sampler)."""
+    onehot = idx.astype(mx.int32)[:, None, :] == mx.arange(n)[None, :, None]
+    if mask is not None:
+        onehot = onehot & mask.astype(mx.bool_)[:, None, :]
+    return onehot.astype(values.dtype) @ values
+
+
 def scatter_mean(x: mx.array, atom_to_token: mx.array, n_tokens: int, atom_mask: mx.array) -> mx.array:
     """``scatter_atom_to_token``: mean of x over each token's valid atoms; tokens without atoms get 0."""
-    B, A, d = x.shape
-    idx = mx.where(atom_mask.astype(mx.bool_), atom_to_token.astype(mx.int32), n_tokens)
-    rows = mx.broadcast_to(mx.arange(B)[:, None], idx.shape)
-    sums = mx.zeros((B, n_tokens + 1, d)).at[rows, idx].add(x)
-    counts = mx.zeros((B, n_tokens + 1, 1)).at[rows, idx].add(mx.ones((B, A, 1)))
-    return (mx.where(counts > 0, sums / mx.maximum(counts, 1.0), 0.0))[:, :n_tokens]
+    sums = segment_sum(x, atom_to_token, n_tokens, atom_mask)
+    counts = segment_sum(mx.ones((*x.shape[:2], 1)), atom_to_token, n_tokens, atom_mask)
+    return mx.where(counts > 0, sums / mx.maximum(counts, 1.0), 0.0)
 
 
 class AtomEncoder:

@@ -84,6 +84,12 @@ def test_two_samples_were_captured_and_scored_separately():
     assert not np.allclose(ref["conf_out_plddt"][0], ref["conf_out_plddt"][1])
 
 
+def test_confidence_head_is_bitwise_repeatable(head):
+    ref = load_ref("vegf1", "heads")
+    a, b = head(**_conf_inputs(ref)), head(**_conf_inputs(ref))
+    assert all(np.array_equal(np.array(a[k]), np.array(b[k])) for k in CONFIDENCE_KEYS)
+
+
 def test_heads_consume_every_weight(head, weights_dir):
     DistogramHead(w := load_group(weights_dir, "distogram_head"))
     assert w.unused() == []
