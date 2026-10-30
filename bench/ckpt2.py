@@ -22,6 +22,7 @@ from preflight import preflight  # noqa: E402
 
 CASES = (("vegf2", "none"), ("il17", "none"), ("tnf2_nomsa", "none"), ("tnf2_msa", "real, 2225 rows"), ("il17_scfv", "none"))
 SAMPLES = (1, 3)
+REPS = ("--warmups", "1", "--repeats", "3")  # Checkpoint 1 runs varied by <1%; see the ledger ruling
 OUT = REPO / "docs" / "checkpoints" / "ckpt2-fold.md"
 GIB = 2**30
 
@@ -45,8 +46,8 @@ def main() -> None:
             run("scripts/capture_refs.py", case, "--stages", "features")
         for samples in SAMPLES:
             s = str(samples)
-            t = last_json(run("bench/torch_fold_bench.py", "--case", case, "--samples", s))
-            m = last_json(run("bench/fold_bench.py", "--case", case, "--samples", s))
+            t = last_json(run("bench/torch_fold_bench.py", "--case", case, "--samples", s, *REPS))
+            m = last_json(run("bench/fold_bench.py", "--case", case, "--samples", s, *REPS))
             cap = t["peak_gb"] * 1e9 / GIB
             capped = run("bench/fold_bench.py", "--case", case, "--samples", s, "--warmups", "0", "--repeats", "1",
                          "--cap-gib", f"{cap:.2f}", check=False)
@@ -64,7 +65,7 @@ def main() -> None:
         "Everything after ESMC (embed, trunk with MSA encoder and 20 loops, distogram, diffusion sampler at the checkpoint's "
         "steps, confidence head) on each case's real features with synthetic ESMC states (bf16). Torch: trunk-only copy loaded "
         "as the rescore worker loads it, eval, no grad, default chunk size, the forward bracketed by `torch.mps.synchronize()`. "
-        "MLX: MLXFold in a clean process. 2 warmups, 5 timed runs; `first` is the cold run. Memory: MLX re-run under a hard cap "
+        "MLX: MLXFold in a clean process. 1 warmup, 3 timed runs (Checkpoint 1 runs varied by under 1 percent); `first` is the cold run. Memory: MLX re-run under a hard cap "
         "equal to torch's sampled peak driver allocation.",
         "",
         "| case | tokens | MSA | samples | torch median (min-max) | MLX median (min-max) | speedup | torch first | MLX first | torch peak | MLX under that cap |",
