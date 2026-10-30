@@ -59,6 +59,15 @@ def test_coordinates_within_torch_device_spread(fold, case):
         assert kabsch_rmsd(got[s], cpu[s], mask) <= max(0.5, 2 * spread), s
 
 
+def test_batched_features_are_rejected_not_folded_wrongly(fold):
+    """One complex at a time (the esm processor never batches); a batch of 2 would get confidences for the
+    wrong number of samples (final review finding 5), so it is refused."""
+    f = load_ref("m49", "features")
+    batched = {k: np.concatenate([v, v], axis=0) for k, v in f.items()}
+    with pytest.raises(NotImplementedError, match="one complex at a time"):
+        fold.fold(batched, None, FoldOptions())
+
+
 def _seeded(fold, seed):
     f = load_ref("m49", "features")
     lm = synthetic_lm_states(f["res_type"].shape[1])

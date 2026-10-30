@@ -9,8 +9,11 @@ the hidden-state cache, frees ESMC, then folds every job in one persistent MLX w
 the esm builder. Per sample it writes ``out/<job>/sample_<i>/`` with complex.cif, pae_complex.npz,
 plddt_complex.npz, tokens_complex.npz and, last, summary.json (the BindCraft-Hunter rescore layout).
 
-Exit status: 0 done, 2 bad input or option, 3 the MLX worker failed (its message names the cause).
-The whole run holds the gpu lock: one GPU run at a time.
+Exit status: 0 done, 2 bad input or option, 3 the MLX worker failed (its message names the cause),
+4 the machine is not ready (the preflight checks: disk, other heavy processes; see preflight.py).
+The whole run holds the gpu lock: one GPU run at a time. The worker runs under a memory cap (default
+28 GiB of the machine's ~36 usable; ``--cap-gib 0`` disables it), so an over-large complex stops
+with a message naming the cap instead of swapping the machine.
 """
 
 from __future__ import annotations
@@ -22,7 +25,8 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-EXIT_INPUT, EXIT_WORKER = 2, 3
+EXIT_INPUT, EXIT_WORKER, EXIT_NOT_READY = 2, 3, 4
+DEFAULT_CAP_GIB = 28.0
 
 
 def log(message: str) -> None:
@@ -55,7 +59,14 @@ def pred(args) -> int:
     from .gpu_lock import gpu_lock
     from .inputs import parse_jobs
 
+    from .preflight import checks
+
     with gpu_lock():
+        try:
+            checks()
+        except SystemExit as refusal:
+            log(str(refusal))
+            return EXIT_NOT_READY
         try:
             jobs = parse_jobs(args.input)
         except (ValueError, OSError, json.JSONDecodeError) as error:
@@ -72,7 +83,7 @@ def pred(args) -> int:
 
         builder = ESMFold2InputBuilder()
         parents = compute_states(jobs, builder=builder, device=args.esmc_device, cache_dir=args.lm_cache, seed=args.seed, log=log)
-        remote = RemoteFold(args.weights, cap_gib=args.cap_gib)
+        remote = RemoteFold(args.weights, cap_gib=args.cap_gib or None)
         try:
             remote.start()
             log("worker ready")
@@ -103,7 +114,7 @@ def pred(args) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="esmfold2-mlx", description="ESMFold2 in MLX")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pred", help="fold the jobs in a job file")
@@ -116,14 +127,20 @@ def main(argv=None) -> int:
     p.add_argument("--msa-depth", type=int, default=None, help="MSA rows per loop (default: the checkpoint's 1024)")
     p.add_argument("--lm-dropout", type=float, default=None, help="per-loop LM-pair dropout (default: the checkpoint's 0.25)")
     p.add_argument("--weights", default=str(REPO / "weights"))
-    p.add_argument("--cap-gib", type=float, default=None, help="stop the MLX worker if its memory passes this")
+    p.add_argument("--cap-gib", type=float, default=DEFAULT_CAP_GIB,
+                   help=f"stop the MLX worker if its memory passes this many GiB (default {DEFAULT_CAP_GIB:g}; 0 disables)")
     p.add_argument("--lm-cache", default=None, help="ESMC hidden-state cache (default ~/.cache/esmfold2_mlx/lm_states)")
     p.add_argument("--esmc-device", default="mps")
     p.add_argument("--match-torch-rng", action="store_true",
                    help="consume torch's random stream for --seed, so a fold can be compared with torch's for the same seed")
     p.add_argument("--torch-rng-device", choices=("mps", "cpu"), default="mps",
-                   help="whose generator --match-torch-rng reproduces (CPU and MPS streams differ)")
-    args = parser.parse_args(argv)
+                   help="whose generator --match-torch-rng reproduces (CPU and MPS streams differ); the stream holds one "
+                        "L x L x 256 dropout mask per loop, about 1.4 GB at 500 tokens")
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
     if args.lm_cache is None:
         args.lm_cache = str(Path.home() / ".cache" / "esmfold2_mlx" / "lm_states")
     return pred(args)

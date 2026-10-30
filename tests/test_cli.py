@@ -83,6 +83,26 @@ def test_cli_exits_nonzero_when_worker_killed_by_cap(tmp_path):
     assert "0.3 GiB" in proc.stderr
 
 
+def test_cli_has_a_default_memory_cap_and_zero_disables_it():
+    """Without a cap an over-large complex swaps the machine with no message (final review finding 1)."""
+    from esmfold2_mlx.cli import build_parser
+
+    args = build_parser().parse_args(["pred", "-i", "j.json", "-o", "out"])
+    assert args.cap_gib == 28.0
+    assert build_parser().parse_args(["pred", "-i", "j.json", "-o", "out", "--cap-gib", "0"]).cap_gib == 0.0
+
+
+def test_cli_runs_the_preflight_checks(tmp_path):
+    """The CLI refuses to start when the disk check fails (final review finding 2)."""
+    job = _job(tmp_path, [{"name": "a", "chains": [{"id": "A", "sequence": M49}]}])
+    env = {k: v for k, v in os.environ.items() if k != "ESMFOLD2_MLX_MIN_FREE_GB"}
+    env.update(PYTHONPATH=str(REPO), ESMFOLD2_MLX_MAX_DISK_PCT="0")  # any disk is "too full"
+    proc = subprocess.run([sys.executable, "-m", "esmfold2_mlx.cli", "pred", "-i", str(job), "-o", str(tmp_path / "out"),
+                           "--lm-cache", str(_cache(tmp_path, job))], capture_output=True, text=True, env=env, timeout=300)
+    assert proc.returncode == 4
+    assert "preflight" in proc.stderr and "full" in proc.stderr
+
+
 @pytest.mark.skipif(not INTEGRATION, reason="needs ESMC-6B and the GPU: set ESMFOLD2_MLX_INTEGRATION=1")
 def test_esmc_runs_and_is_freed_before_the_worker_starts(tmp_path):
     job = _job(tmp_path, [{"name": "a", "chains": [{"id": "A", "sequence": M49}]}])

@@ -42,6 +42,14 @@ def test_override_passes_with_enough_free_space_and_warns(monkeypatch, capsys):
     assert "WARNING" in err and "ESMFOLD2_MLX_MIN_FREE_GB=50" in err and "94%" in err
 
 
+def test_disk_limit_can_be_set_from_the_environment(monkeypatch):
+    monkeypatch.delenv("ESMFOLD2_MLX_MIN_FREE_GB", raising=False)
+    monkeypatch.setenv("ESMFOLD2_MLX_MAX_DISK_PCT", "70")
+    _disk(monkeypatch, 80.0, 200.0)
+    with pytest.raises(SystemExit, match="80% full"):
+        preflight.check_disk()
+
+
 def test_override_fails_when_free_space_is_below_it(monkeypatch):
     monkeypatch.setenv("ESMFOLD2_MLX_MIN_FREE_GB", "50")
     _disk(monkeypatch, 96.0, 40.0)

@@ -9,7 +9,8 @@ NOT DONE. Spec: `docs/superpowers/specs/2026-10-29-esmfold2-mlx-design.md`; plan
 > ESMC-6B stays in torch (bf16). The whole fold is **1.58-1.81x faster** than torch on MPS called the way the
 > BindCraft-Hunter rescore worker calls it, at every size from 247 to 499 tokens, with and without a real MSA, at 1 and 3
 > samples, with **lower peak memory** (about half of torch's with 3 samples). On real ESMC-6B states MLX matches torch on
-> MPS to pTM 3e-4, ipTM 4e-4, pLDDT 1e-4 and 0.003-0.016 A in coordinates, inside torch's own same-seed repeat spread.
+> MPS to pTM 3e-4, ipTM 4e-4, pLDDT 1e-4 and 0.003-0.016 A in coordinates: of the same order as torch's own same-seed
+> repeat spread on MPS (0.004-0.021 A; on one of the four samples MLX sits 2-3x outside it, on the others inside).
 > Use it: `bin/esmfold2-mlx pred -i job.json -o out/` (see "Using it").
 
 ## Decisions made by the user (Ethan)
@@ -45,7 +46,7 @@ took 72.2 s wall for 66.0 s of folding. ESMC-6B is not in these numbers (it runs
 | inputs embedder (bf16 atom attention) | ~1e-4 (= torch's own CPU/MPS spread) | 6e-7 to 6.5e-6 |
 | denoiser call | within 2x torch's CPU/MPS spread | closer to MPS than torch CPU is |
 | end to end, replayed draws (`end_to_end.md`) | distogram 5e-6 to 2e-5, 0 bins flipped | distogram 7e-7 to 3e-6; coords 0.004-0.009 A; pTM/ipTM/pLDDT to 3-4 decimals |
-| end to end, real ESMC-6B (`real_esmc.md`) | | pTM 3e-4, ipTM 4e-4, pLDDT 1e-4, coords 0.003-0.016 A; torch vs itself 0.004-0.021 A |
+| end to end, real ESMC-6B (`real_esmc.md`) | | pTM 3e-4, ipTM 4e-4, pLDDT 1e-4, coords 0.003-0.016 A; torch vs itself 0.004-0.021 A (same order; tnf2_msa sample 0 is 2-3x torch's own spread) |
 
 The same seed gives a bit-identical MLX fold (`MLXDraws`); `--match-torch-rng` reproduces torch's own random stream for a
 seed bit for bit (verified against draws recorded from real torch runs) so an MLX fold can be compared with torch's.
@@ -78,8 +79,10 @@ bin/esmfold2-mlx pred -i job.json -o out/ [--samples N] [--loops N] [--steps N] 
 Protein complexes only (ligands, DNA/RNA, modifications are rejected with a message naming the chain). Per sample:
 `out/<job>/sample_<i>/{complex.cif, pae_complex.npz, plddt_complex.npz, tokens_complex.npz, summary.json}` (the
 BindCraft-Hunter rescore layout) and `out/<job>/coords.npz`. Exit 2: bad input; 3: the MLX worker failed (message names the
-cause, e.g. its memory cap). ESMC-6B hidden states are cached in `~/.cache/esmfold2_mlx/lm_states/` as exact bf16 bits
-(about 200 MB per 500-token complex). From Python: `esmfold2_mlx.fold.MLXFold(weights).fold(features, lm_states, FoldOptions())`
+cause, e.g. its memory cap); 4: the preflight checks refused (disk over 90% full unless `ESMFOLD2_MLX_MIN_FREE_GB` is set,
+or another process holding over 8 GB). The worker runs under a 28 GiB memory cap by default (`--cap-gib`, 0 disables), so an
+over-large complex stops with a message instead of swapping the machine. ESMC-6B hidden states are cached in
+`~/.cache/esmfold2_mlx/lm_states/` as exact bf16 bits (about 200 MB per 500-token complex). From Python: `esmfold2_mlx.fold.MLXFold(weights).fold(features, lm_states, FoldOptions())`
 in an MLX-only process, `esmfold2_mlx.worker.RemoteFold` from a torch process, or `esmfold2_mlx.hybrid.install(model, weights)`
 to make an esm `EsmFold2Model` run its post-ESMC forward in MLX.
 
@@ -96,8 +99,9 @@ PYTHONPATH=. $PY bench/ckpt0.py | bench/ckpt1.py | bench/ckpt2.py | scripts/pari
 Captures per test file (case list in `scripts/cases.py`): `pair_block` (m49, vegf1, cpu); `trunk` (m49, m49_q, vegf1,
 tnf60_msa, tnf60_shallow, cpu); `heads` (m49, vegf1, tnf60_msa, cpu); `embed` (m49, vegf1, tnf60_msa, cpu and mps);
 `sampler` (m49, vegf1, cpu then mps); `fold` (m49, vegf1, tnf60_msa, tnf60_shallow, cpu then mps); `features` for every case.
-A missing ref fails the test with the exact capture command. Every real-model run goes through `scripts/preflight.py`
-(gpu lock, disk under 90% unless `ESMFOLD2_MLX_MIN_FREE_GB` is set, no other process over 8 GB).
+A missing ref fails the test with the exact capture command. Every real-model run (the CLI, captures, benchmarks) takes the
+gpu lock and runs the checks in `esmfold2_mlx/preflight.py` (disk under `ESMFOLD2_MLX_MAX_DISK_PCT`, default 90, unless
+`ESMFOLD2_MLX_MIN_FREE_GB` is set; no other process over 8 GB); scripts and benchmarks go through `scripts/preflight.py`.
 
 ## Open items
 
@@ -107,4 +111,7 @@ A missing ref fails the test with the exact capture command. Every real-model ru
 - NOT DONE: the layout/fusion work in finding 4.
 - The integration tests print three warnings from esm's own torch code (config field rename, single-sequence notice, CUDA
   autocast notice); not from this port.
-- Free disk: the machine was at 93-94% during this work.
+- Free disk: the machine was at 93-94% during this work. The ESMC hidden-state cache has no eviction or size cap (about
+  200 MB per 500-token complex); clear `~/.cache/esmfold2_mlx/lm_states/` by hand.
+- `--match-torch-rng` hands the worker one L x L x 256 dropout mask per loop (about 1.4 GB at 500 tokens) on top of the fold.
+- One complex at a time: `MLXFold.fold` refuses batched features (the esm processor never batches).

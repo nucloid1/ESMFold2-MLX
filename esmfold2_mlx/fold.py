@@ -40,6 +40,8 @@ class MLXFold:
     def fold(self, features: dict, lm_hidden_states, options: FoldOptions, draws: Optional[Draws] = None) -> dict[str, np.ndarray]:
         draws = MLXDraws(options.seed) if draws is None else draws
         f = {k: (v if isinstance(v, mx.array) else mx.array(np.asarray(v))) for k, v in features.items() if v is not None}
+        if f["res_type"].shape[0] != 1:
+            raise NotImplementedError("MLXFold folds one complex at a time (feature batch size 1), as the esm processor does")
         lm = None if lm_hidden_states is None else (lm_hidden_states if isinstance(lm_hidden_states, mx.array)
                                                     else mx.array(np.asarray(lm_hidden_states)))
         if "disto_cond_mask" in f and bool(mx.any(f["disto_cond_mask"]).item()):
