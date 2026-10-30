@@ -14,6 +14,7 @@ Layouts follow torch: MSA tensors are [B, L, M, ...] inside the encoder ("pre-tr
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 import mlx.core as mx
@@ -24,6 +25,20 @@ from .weights import Weights, key, load_group
 
 NUM_RES_TYPES = 33
 _MASKED_BIAS = -1e5
+
+
+@dataclass(frozen=True)
+class Chunks:
+    opm_rows: int  # rows i of the outer-product mean computed at once
+
+
+def auto_chunks(n_tokens: int, hidden: int = 32, budget_bytes: int = 512 * 2**20) -> Chunks:
+    """Chunk sizes from a byte budget, never a constant (Mol-1-MLX ``auto_chunks``).
+
+    The outer-product mean's intermediate is [rows, N, hidden * hidden] fp32; the MSA tensor itself
+    is not chunked (nor is it in torch)."""
+    per_row = n_tokens * hidden * hidden * 4
+    return Chunks(opm_rows=max(1, min(n_tokens, budget_bytes // per_row)))
 
 
 class OuterProductMean:

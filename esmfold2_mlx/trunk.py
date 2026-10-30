@@ -21,7 +21,7 @@ import mlx.core as mx
 
 from .config import ModelConfig
 from .layers import LayerNorm, Linear, Transition, TriangleMultiplication
-from .msa import MSAEncoder
+from .msa import MSAEncoder, auto_chunks
 from .rng import Draws
 from .weights import Weights, key, load_group
 
@@ -160,6 +160,8 @@ class ParcaeTrunk:
             msa_inputs = self._column_masked(msa_inputs, draws, rate)
             depth = msa_inputs["msa"].shape[1]
             subsample = max_depth is not None and depth > 1 and depth > max_depth
+            if opm_chunk is None:
+                opm_chunk = auto_chunks(z_init.shape[1], mcfg.outer_hidden_size).opm_rows
         fixed_msa_pair = None
         for loop in range(num_loops + 1):
             lm_i = lm_z

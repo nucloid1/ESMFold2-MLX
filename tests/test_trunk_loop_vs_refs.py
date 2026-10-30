@@ -19,7 +19,7 @@ from esmfold2_mlx.rng import ReplayDraws
 from esmfold2_mlx.trunk import FoldingTrunk, LanguageModelShim, ParcaeTrunk
 from esmfold2_mlx.weights import load_group
 
-CASES = ["m49", "vegf1"]
+CASES = ["m49", "vegf1", "m49_q", "tnf60_msa", "tnf60_shallow"]
 STAGE_GATE = 1e-5
 COMPOSITE_GATE = 1e-3
 

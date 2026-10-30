@@ -165,7 +165,13 @@ def capture_trunk(case: Case, device: str, seed: int) -> None:
     print(f"{loop_count[0]} trunk loops; draw sites: {sorted({k.split('/')[0] for k in recorder.arrays})}")
 
 
-CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk}
+def capture_features(case: Case, device: str, seed: int) -> None:
+    """The esm builder's feature dict (shared by both devices), numpy."""
+    features, _ = featurize(case, seed, "cpu")
+    _save(case, device, "features", {k: v.numpy() for k, v in features.items() if isinstance(v, torch.Tensor)})
+
+
+CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk, "features": capture_features}
 
 
 def main(argv=None) -> None:
