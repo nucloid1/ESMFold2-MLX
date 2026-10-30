@@ -1,0 +1,4 @@
+#!/bin/sh
+# ESMFold2 in MLX. Runs in the esmfold2-binder-design env unless ESMFOLD2_MLX_PYTHON names another python.
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec "${ESMFOLD2_MLX_PYTHON:-/opt/homebrew/Caskroom/miniforge/base/envs/esmfold2-binder-design/bin/python}" -m esmfold2_mlx.cli "$@"
