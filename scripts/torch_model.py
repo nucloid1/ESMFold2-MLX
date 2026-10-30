@@ -12,6 +12,8 @@ import re
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cases import Case  # noqa: E402
@@ -115,6 +117,52 @@ class DrawRecorder:
 
     def __enter__(self):
         for module, name in self.TARGETS:
+            original = getattr(module, name)
+            self._saved.append((module, name, original))
+            setattr(module, name, self._wrap(name, original))
+        return self
+
+    def __exit__(self, *exc):
+        for module, name, original in reversed(self._saved):
+            setattr(module, name, original)
+        self._saved.clear()
+
+
+class DrawReplayer:
+    """Hand the esmfold2 code recorded draws instead of fresh ones (keys as ``DrawRecorder`` writes
+    them), so torch on another device consumes exactly the randomness a recorded run consumed."""
+
+    def __init__(self, arrays: dict) -> None:
+        self.arrays = arrays
+        self._counts: dict = {}
+        self._saved: list = []
+
+    def _wrap(self, name, original):
+        def wrapper(*args, **kwargs):
+            caller = sys._getframe(1).f_code
+            if "esm/models/esmfold2/" not in caller.co_filename:
+                return original(*args, **kwargs)
+            site = f"{caller.co_name}:{name}"
+            index = self._counts.get(site, 0)
+            self._counts[site] = index + 1
+            key = f"{site}/{index}"
+            if key not in self.arrays:
+                raise KeyError(f"no recorded draw {key!r}")
+            recorded = torch.from_numpy(np.asarray(self.arrays[key]))
+            if name == "dropout":
+                x = args[0]
+                p = kwargs.get("p", args[1] if len(args) > 1 else 0.5)
+                return x * (recorded.to(x.device, x.dtype) / (1 - p))
+            if name == "trunc_normal_":
+                return args[0].copy_(recorded.to(args[0].device, args[0].dtype))
+            fresh = original(*args, **kwargs)
+            if tuple(fresh.shape) != tuple(recorded.shape):
+                raise ValueError(f"{key}: recorded {tuple(recorded.shape)}, asked for {tuple(fresh.shape)}")
+            return recorded.to(fresh.device, fresh.dtype)
+        return wrapper
+
+    def __enter__(self):
+        for module, name in DrawRecorder.TARGETS:
             original = getattr(module, name)
             self._saved.append((module, name, original))
             setattr(module, name, self._wrap(name, original))

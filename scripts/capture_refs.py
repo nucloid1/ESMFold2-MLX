@@ -240,6 +240,79 @@ def capture_embed(case: Case, device: str, seed: int) -> None:
     _save(case, device, "embed", out)
 
 
+SAMPLE_KEYS = ("z_trunk", "s_inputs", "relative_position_encoding", "ref_pos", "ref_charge", "ref_mask", "ref_element",
+               "ref_atom_name_chars", "ref_space_uid", "tok_idx", "asym_id", "residue_index", "entity_id", "token_index",
+               "sym_id", "token_attention_mask")
+SAMPLER_SITES = ("sample", "_random_rotations", "_center_random_augmentation")
+
+
+def capture_sampler(case: Case, device: str, seed: int) -> None:
+    """cpu: the real forward (synthetic ESMC states, checkpoint steps, 2 samples) records the sampler's
+    inputs, every denoiser call's output (first and last call with inputs) and the sampler draws.
+    mps: replays the cpu sampler inputs with the cpu draws, and re-runs the cpu-recorded first and
+    last denoiser calls, so all devices see identical inputs."""
+    from torch_model import DrawRecorder, DrawReplayer
+
+    model = load_trunk_only(device)
+    dm = model.structure_head.diffusion_module
+    calls: list = []
+    t_hats: list = []
+    first_last: dict = {}
+
+    def on_dm(module, args, kwargs, output):
+        calls.append(_np(output["x_denoised"]))
+        t_hats.append(float(kwargs["t_hat"][0]))
+        record = {k: _np(v) for k, v in kwargs.items() if isinstance(v, torch.Tensor)}
+        if len(calls) == 1:
+            first_last["first"] = record
+        first_last["last"] = record
+
+    dm.register_forward_hook(on_dm, with_kwargs=True)
+    out: dict = {}
+    if device == "cpu":
+        from esm.models.esmfold2.processor import _seed_context
+
+        from helpers import synthetic_lm_states
+
+        features, _ = featurize(case, seed, device)
+        lm = torch.from_numpy(synthetic_lm_states(features["res_type"].shape[1]))
+        original = model.structure_head.sample
+
+        def sample(**kw):
+            result = original(**kw)
+            out.update({f"in_{k}": _np(kw[k]) for k in SAMPLE_KEYS})
+            out["num_diffusion_samples"] = np.array(kw["num_diffusion_samples"])
+            out["out"] = _np(result["sample_atom_coords"])
+            return result
+
+        model.structure_head.sample = sample
+        with torch.no_grad(), _seed_context(seed), DrawRecorder() as recorder:
+            model(**features, lm_hidden_states=lm, num_diffusion_samples=2, **SAMPLER)
+        _save(case, device, "sampler_draws", {k: v for k, v in recorder.arrays.items() if k.split(":")[0] in SAMPLER_SITES})
+        for i, name in ((0, "first"), (len(calls) - 1, "last")):
+            out.update({f"call{i}_{k}": v for k, v in first_last[name].items()})
+            out[f"call{i}_out"] = calls[i]
+    else:
+        cpu = dict(np.load(ref_path(case.name, "sampler", "cpu")))
+        draws = dict(np.load(ref_path(case.name, "sampler_draws", "cpu")))
+        n = int(cpu["num_diffusion_samples"])
+        inputs = {k: torch.from_numpy(cpu[f"in_{k}"]).to(device) for k in SAMPLE_KEYS}
+        with torch.no_grad(), DrawReplayer(draws):
+            result = model.structure_head.sample(**inputs, s_trunk=None, num_diffusion_samples=n, **SAMPLER)
+        out["out"] = _np(result["sample_atom_coords"])
+        sampler_calls = len(calls)
+        for i in (0, int(cpu["n_calls"]) - 1):  # the cpu-recorded calls, re-run here on identical inputs
+            kw = {k[len(f"call{i}_"):]: torch.from_numpy(v).to(device) for k, v in cpu.items()
+                  if k.startswith(f"call{i}_") and k != f"call{i}_out"}
+            with torch.no_grad():
+                out[f"replay{i}_out"] = _np(dm(**kw, s_trunk=None, num_diffusion_samples=n, return_token_repr=True)["x_denoised"])
+        calls, t_hats = calls[:sampler_calls], t_hats[:sampler_calls]
+    out["denoised"] = np.stack(calls)  # [calls, samples, atoms, 3]
+    out["t_hats"] = np.array(t_hats)
+    out["n_calls"] = np.array(len(calls))
+    _save(case, device, "sampler", out)
+
+
 def capture_features(case: Case, device: str, seed: int) -> None:
     """The esm builder's feature dict (shared by both devices), numpy."""
     features, _ = featurize(case, seed, "cpu")
@@ -247,7 +320,7 @@ def capture_features(case: Case, device: str, seed: int) -> None:
 
 
 CAPTURES = {"pair_block": capture_pair_block, "trunk": capture_trunk, "features": capture_features, "heads": capture_heads,
-            "embed": capture_embed}
+            "embed": capture_embed, "sampler": capture_sampler}
 
 
 def main(argv=None) -> None:

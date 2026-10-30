@@ -57,6 +57,12 @@ def test_mlx_dropout_keep_rate_is_one_minus_p():
     assert abs(keep.mean() - 0.75) < 0.01
 
 
-def test_mlx_draws_not_yet_ported_sites_raise():
-    with pytest.raises(NotImplementedError):
-        MLXDraws(0).step_noise(0, (1, 4, 3))
+def test_mlx_draws_cover_every_site_with_the_requested_shapes():
+    d = MLXDraws(0)
+    assert d.diffusion_init((2, 5, 3)).shape == (2, 5, 3)
+    assert d.rotation_quat(0, 2).shape == (2, 4)
+    assert d.translation(0, (2, 1, 3)).shape == (2, 1, 3)
+    assert d.step_noise(0, (2, 5, 3)).shape == (2, 5, 3)
+    assert d.msa_column_keep((1, 7), 0.1).shape == (1, 7)
+    rows = np.array(d.msa_row_indices(0, 10, 4))
+    assert rows[0] == 0 and len(rows) == 4 and (np.diff(rows) > 0).all()

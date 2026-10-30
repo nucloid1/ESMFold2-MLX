@@ -200,3 +200,36 @@ class AtomEncoder:
         n_tokens = int(mx.max(atom_to_token).item()) + 1
         a = scatter_mean(mx.maximum(self.to_token(q), 0.0), atom_to_token, n_tokens, atom_mask)
         return a, q, c
+
+    def encode_coords(self, static, r_noisy: mx.array, atom_mask: mx.array, atom_to_token: mx.array, n_tokens: int):
+        """Diffusion-module use: ``r_noisy`` [S, A, 3] (S = batch x samples) enters through
+        ``coords_linear([r, 0])``. Returns (a [S, L, d_token], q, c, (cos, sin, valid)) for the decoder."""
+        c_base, cos, sin = static
+        S = r_noisy.shape[0]
+        rep = (lambda x: x) if S == c_base.shape[0] else (lambda x: mx.repeat(x, S // x.shape[0], axis=0))
+        c = rep(c_base)
+        q = c + self.coords_linear(mx.concatenate([r_noisy, mx.zeros_like(r_noisy)], axis=-1))
+        params = (rep(cos), rep(sin), rep(atom_mask))
+        q = self.transformer(q, c, *params)
+        a = scatter_mean(mx.maximum(self.to_token(q), 0.0), rep(atom_to_token), n_tokens, params[2])
+        return a, q, c, params
+
+
+class AtomDecoder:
+    """``EsmFold2AtomDecoder``: token features broadcast to atoms, the atom transformer, LN, xyz."""
+
+    def __init__(self, w: Weights, prefix: str, acfg: AtomEncoderConfig, window: int) -> None:
+        self.token_to_atom = Linear.load(w, key(prefix, "token_to_atom_linear"))
+        self.blocks = [SWAAtomBlock(w, key(prefix, f"atom_transformer.blocks.{i}"), acfg.num_attention_heads, window // 2)
+                       for i in range(acfg.num_hidden_layers)]
+        self.norm = LayerNorm.load(w, key(prefix, "norm"))
+        self.output_linear = Linear.load(w, key(prefix, "output_linear"))
+
+    def __call__(self, a: mx.array, q: mx.array, c: mx.array, params: tuple, atom_to_token: mx.array) -> mx.array:
+        idx = atom_to_token.astype(mx.int32)
+        if idx.shape[0] != a.shape[0]:
+            idx = mx.repeat(idx, a.shape[0] // idx.shape[0], axis=0)
+        q = q + mx.take_along_axis(self.token_to_atom(a), idx[..., None], axis=1)
+        for block in self.blocks:
+            q = block(q, c, *params)
+        return self.output_linear(self.norm(q))

@@ -121,13 +121,13 @@ class MLXDraws:
         return rows_from_perm(mx.random.permutation(depth - 1, key=self._split()), max_depth)
 
     def diffusion_init(self, shape):
-        raise NotImplementedError("sampler draws land with the diffusion sampler (Task 9)")
+        return mx.random.normal(shape, key=self._split())
 
     def rotation_quat(self, step, n):
-        raise NotImplementedError("sampler draws land with the diffusion sampler (Task 9)")
+        return mx.random.normal((n, 4), key=self._split())
 
     def translation(self, step, shape):
-        raise NotImplementedError("sampler draws land with the diffusion sampler (Task 9)")
+        return mx.random.normal(shape, key=self._split())
 
     def step_noise(self, step, shape):
-        raise NotImplementedError("sampler draws land with the diffusion sampler (Task 9)")
+        return mx.random.normal(shape, key=self._split())
